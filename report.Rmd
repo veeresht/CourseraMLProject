@@ -1,0 +1,113 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "Veeresh Taranalli"
+date: "December 27, 2015"
+output: html_document
+---
+
+## Summary 
+In this project, we develop ML prediction models for prediction of correctness of weight lifting exercises. The dataset used is from: http://groupware.les.inf.puc-rio.br/har. 
+The correctness of weight lifting exercises is determined by 5 response classes `A`, `B`, `C`, `D`, `E` given by the `classe` variable in the training dataset. Our objective is to design a ML prediction model which can perform well on the given test dataset which consists of 20 test cases. 
+
+## Getting and Cleaning the Data
+```{r warning=FALSE, message=FALSE}
+# Loading required libraries
+library(caret)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r warning=FALSE, message=FALSE}
+# Reading downloaded train and test data
+# Train Dataset: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+# Test Dataset: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+train_data = read.csv("pml-training.csv")
+test_data = read.csv("pml-testing.csv")
+```
+
+The predictor features/variables available to us are measurements obtained as combinations of sensors (belt, arm, forearm, dumbbell), angles (roll, pitch, yaw), instruments (gyroscope, magnetometer, accelerometer), directions (X, Y, Z) and statistically derived features over time windows (avg, var, stddev, amplitude, max, min, kurtosis, skewness).
+
+From a simple `summary` of the test dataset, we observe that all the statistically derived predictors are empty. Hence we choose the predictor variable subset as listed:
+`user_name`, `roll_belt`, `pitch_belt`, `yaw_belt`, `total_accel_belt`, `gyros_belt_x`, `gyros_belt_y`, `gyros_belt_z`, `accel_belt_x`, `accel_belt_y`, `accel_belt_z`, `magnet_belt_x`, `magnet_belt_y`, `magnet_belt_z`, `roll_arm`, `pitch_arm`, `yaw_arm`, `total_accel_arm`, `gyros_arm_x`, `gyros_arm_y`, `gyros_arm_z`, `accel_arm_x`, `accel_arm_y`, `accel_arm_z`, `magnet_arm_x`, `magnet_arm_y`, `magnet_arm_z`, `roll_dumbbell`, `pitch_dumbbell`, `yaw_dumbbell`, `total_accel_dumbbell`, `gyros_dumbbell_x`, `gyros_dumbbell_y`, `gyros_dumbbell_z`, `accel_dumbbell_x`, `accel_dumbbell_y`, `accel_dumbbell_z`, `magnet_dumbbell_x`, `magnet_dumbbell_y`, `magnet_dumbbell_z`, `roll_forearm`, `pitch_forearm`, `yaw_forearm`, `total_accel_forearm`, `gyros_forearm_x`, `gyros_forearm_y`, `gyros_forearm_z`, `accel_forearm_x`, `accel_forearm_y`, `accel_forearm_z`, `magnet_forearm_x`, `magnet_arm_y`, `magnet_forearm_z`. 
+
+Note that we also ignore the time variables, `raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`, `new_window`, `num_window` as we want to predict the quality of the exercise independently of the time it was performed. 
+
+```{r warning=FALSE, message=FALSE}
+# Process train and test datasets
+train_data <- select(train_data, user_name, starts_with("roll_"), starts_with("pitch_"), starts_with("yaw_"), starts_with("total_"), starts_with("gyros_"), starts_with("accel_"), starts_with("magnet"), classe)
+    
+test_data <- select(test_data, user_name, starts_with("roll_"), starts_with("pitch_"), starts_with("yaw_"), starts_with("total_"), starts_with("gyros_"), starts_with("accel_"), starts_with("magnet"))
+
+# Convert all features except user_name and classe to numeric datatypes
+last_col <- length(names(train_data))-1
+to_numeric_cols <- 2:last_col
+train_data[, to_numeric_cols] <- apply(train_data[, to_numeric_cols], 2, function(x) as.numeric(x))
+test_data[, to_numeric_cols] <- apply(test_data[, to_numeric_cols], 2, function(x) as.numeric(x))
+
+# Convert user_name and class to factors
+train_data$user_name <- as.factor(train_data$user_name)
+train_data$classe <- as.factor(train_data$classe)
+test_data$user_name <- as.factor(test_data$user_name)
+
+# Check that there are no 'NAs' in our datasets
+sum(is.na(train_data))
+sum(is.na(test_data))
+```
+
+Now that we have clean datasets, we can proceed with building our prediction model. 
+
+## Design, Development and Choice of the ML Model
+Inspection of the training dataset reveals that the data is highly non-linear. It is also clear that the measurement values are in different ranges for different users. Hence the decision to keep use the `user_name` variable. Random Forests (RF) and Gradient Boosting on Trees (GBM) models are two ML techniques that might work well on this kind of data. 
+
+### Random Forest (RF) Model
+For the RF model, we do not explicitly use cross-validation but just use the out-of-bag (OOB) error estimate as an estimate of the out-of-sample error. 
+We choose to train 3 RF models, with different `ntree` parameter values i.e., 200, 500 and 1000 trees as follows.
+
+```{r warning=FALSE, message=FALSE, eval=FALSE}
+set.seed(131)
+rfFit1_200 <- randomForest(x=train_data[,-54], y=train_data$classe, ntree=200, do.trace = TRUE)
+rfFit1_500 <- randomForest(x=train_data[,-54], y=train_data$classe, ntree=500, do.trace = TRUE)
+rfFit1_1000 <- randomForest(x=train_data[,-54], y=train_data$classe, ntree=1000, do.trace = TRUE)
+```
+
+```{r warning=FALSE, message=FALSE}
+load("rfFit1_ntree_200.RData")
+load("rfFit1_ntree_500.RData")
+load("rfFit1_ntree_1000.RData")
+```
+
+We observe an OOB estimate of error rate of 0.29% for `ntree = 200` and `ntree = 500`,
+0.28% for `ntree = 1000`. 
+
+### Gradient Boosting Model (GBM)
+Cross-Validation Strategy: We use repeated 10-fold CV technqiue with 10 repetitions for choosing the best RF and GBM models using the `caret` package. 
+
+```{r warning=FALSE, message=FALSE, eval=FALSE}
+# 10-fold repeated CV 10 times
+fitControl <- trainControl(method = "repeatedcv", number = 5, repeats = 10)
+gbmFit1 <- train(classe ~ ., data = train_data, method = "gbm", trControl = fitControl, verbose = FALSE)
+```
+
+Using the GBM model we obtain an out of sample error estimate of 3.4%. 
+
+Hence we choose the GBM model and the RF model with `ntree = 200` as our candidate models for evaluation on the test dataset. Prediction on the test data gives us the following results for the `classe` variable
+
+```{r eval = FALSE}
+predict(rfFit1_200, test_data)
+```
+
+ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20   
+ B  A  B  A  A  E  D  B  A  A  B  C  B  A  E  E  A  B  B  B   
+Levels: A B C D E  
+
+```{r eval=FALSE}
+predict(gbmFit1, test_data)
+```
+
+[1] B A B A A E D B A A B C B A E E A B B B  
+Levels: A B C D E  
+
+We observe that the predictions for the test data cases are the same using either RF or GBM model. 
+
+
+
